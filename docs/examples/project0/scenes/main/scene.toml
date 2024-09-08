@@ -1,0 +1,18 @@
+[entities.entity1]
+position = [0, 47, 222] # Vector3 position
+mesh = "ogrehead"
+
+[entities.entity2]
+position = [84, 48] # Vector2 position: z component is assumed to be 0.
+mesh = "ogrehead"
+
+[entities.entity3]
+position = [0, 104, 0]
+scale = [2, 1.2, 1]
+mesh = "ogrehead"
+
+[entities.entity4]
+position = [-84, 48, 0]
+mesh = "ogrehead"
+# TODO: Add the roll: -90deg somewhere here...
+

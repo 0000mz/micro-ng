@@ -1,12 +1,15 @@
 #include <cassert>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <exception>
 #include <filesystem>
 #include <iostream>
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <utility>
+#include <vector>
 
 #include "CLI/CLI.hpp"
 #include "Ogre.h"
@@ -16,8 +19,92 @@
 #include "toml++/toml.hpp"
 
 namespace {
-// FIX: Do not hardcode this.
-const char kBaseProjectPath[] = "/home/mob/Projects/roguelike";
+
+class AssetLibrary {
+public:
+  struct AssetInfo {
+    std::filesystem::path absolute_path;
+    std::filesystem::path resource_relative_path;
+  };
+
+  static std::optional<AssetLibrary>
+  FromTOML(const std::filesystem::path &config_path) {
+    toml::table tbl;
+    try {
+      tbl = toml::parse_file(std::string(config_path));
+    } catch (const toml::parse_error &err) {
+      std::cerr << "Parsing failed: " << err << std::endl;
+      return std::nullopt;
+    }
+
+    const toml::table *objects_table = tbl["assets"].as<toml::table>();
+    if (!objects_table) {
+      std::cerr << "Could not find any assets in the config." << std::endl;
+      return std::nullopt;
+    }
+
+    AssetLibrary lib;
+    lib.asset_dir_ = config_path.parent_path();
+    for (const auto &object : *objects_table) {
+      const toml::key &object_name = object.first;
+      std::cout << "Loading object: " << object_name << std::endl;
+      const toml::table *objinfo = object.second.as<toml::table>();
+      if (!objinfo) {
+        std::cerr << "Error: No object info found." << std::endl;
+        continue;
+      }
+      if (!lib.ParseObjectInfoFromTOML(object_name, *objinfo)) {
+        std::cerr << "Error: Failed to parse asset object information for "
+                     "object name: "
+                  << object_name << std::endl;
+        return std::nullopt;
+      }
+    }
+    return lib;
+  }
+
+  const AssetInfo *GetAsset(std::string_view asset_name) const {
+    const auto &asset =
+        assets_.find(std::string(asset_name.data(), asset_name.size()));
+    if (asset == assets_.end()) {
+      return nullptr;
+    }
+    return &(asset->second);
+  }
+
+  std::filesystem::path GetAssetDirectory() const { return asset_dir_; }
+
+private:
+  bool ParseObjectInfoFromTOML(std::string_view object_key,
+                               const toml::table &obj_info) {
+    std::optional<std::string_view> object_path =
+        obj_info["path"].value<std::string_view>();
+    if (!object_path.has_value()) {
+      std::cerr << "No path found for object: " << object_key << std::endl;
+      return false;
+    }
+
+    AssetInfo info;
+    info.absolute_path = asset_dir_ / object_path.value();
+    info.resource_relative_path = object_path.value();
+
+    if (!std::filesystem::exists(info.absolute_path)) {
+      std::cerr << "Error: Asset at path " << info.absolute_path
+                << " does not exist." << std::endl;
+      return false;
+    }
+    if (std::filesystem::is_directory(info.absolute_path)) {
+      std::cerr << "Error: Asset at path " << info.absolute_path
+                << "is a directory." << std::endl;
+      return false;
+    }
+    assets_.insert({std::string(object_key), std::move(info)});
+    return true;
+  }
+
+  std::unordered_map<std::string, AssetInfo> assets_;
+  std::filesystem::path asset_dir_;
+};
 
 using ::Ogre::Root;
 using ::Ogre::SceneManager;
@@ -32,18 +119,77 @@ class Scene {
 public:
   Scene(const std::filesystem::path &config) : config_(config) {}
 
-  void Load(OgreBites::ApplicationContext *appctx);
+  void Load(OgreBites::ApplicationContext *appctx,
+            const AssetLibrary &assetlib);
 
 private:
+  void ParseEntityInfoFromTOML(const toml::table &entity_info,
+                               Ogre::SceneManager &scene,
+                               const AssetLibrary &assetlib);
+
   std::filesystem::path config_;
 };
 
-void Scene::Load(OgreBites::ApplicationContext *appctx) {
-  // TODO: Remove the rest of this function.
-  Ogre::ResourceGroupManager &resg_manager =
-      Ogre::ResourceGroupManager::getSingleton();
-  resg_manager.addResourceLocation(kBaseProjectPath, "FileSystem");
+#define TOML_PARSE_VECTOR3(TABLE, KEY, OUTVEC, DEFAULT)                        \
+  do {                                                                         \
+    double parts[3];                                                           \
+    parts[0] = DEFAULT[0];                                                     \
+    parts[1] = DEFAULT[1];                                                     \
+    parts[2] = DEFAULT[2];                                                     \
+    const toml::array *arr = TABLE[KEY].as<toml::array>();                     \
+    if (arr) {                                                                 \
+      for (int i = 0; i < 3; ++i) {                                            \
+        const toml::node *component = arr->get(i);                             \
+        if (component == nullptr)                                              \
+          break;                                                               \
+        const std::optional<double> value = component->value<double>();        \
+        if (!value.has_value())                                                \
+          continue;                                                            \
+        parts[i] = *value;                                                     \
+      }                                                                        \
+    }                                                                          \
+    OUTVEC = Ogre::Vector3(parts[0], parts[1], parts[2]);                      \
+  } while (false);
 
+void Scene::ParseEntityInfoFromTOML(const toml::table &entity_info,
+                                    Ogre::SceneManager &scene,
+                                    const AssetLibrary &assetlib) {
+  std::cout << "Inside ParseEntityInfoFromTOML" << std::endl;
+  Ogre::Vector3 position(0, 0, 0);
+  Ogre::Vector3 scale(1, 1, 1);
+
+  TOML_PARSE_VECTOR3(entity_info, "position", position, Ogre::Vector3(0, 0, 0));
+  TOML_PARSE_VECTOR3(entity_info, "scale", scale, Ogre::Vector3(1, 1, 1));
+
+  std::optional<std::string_view> mesh_name =
+      entity_info["mesh"].value<std::string_view>();
+  if (!mesh_name.has_value()) {
+    std::cerr << "Error: Could not get mesh name from entity info."
+              << std::endl;
+    return;
+  }
+
+  const AssetLibrary::AssetInfo *asset_info = assetlib.GetAsset(*mesh_name);
+  if (!asset_info) {
+    std::cerr << "Error: Could not find asset from asset library with name: "
+              << *mesh_name << std::endl;
+    return;
+  }
+  std::filesystem::path resource_relative_path_as_fspath(
+      asset_info->resource_relative_path);
+  std::cout << "Resource relative path: " << asset_info->resource_relative_path
+            << ", filename: " << resource_relative_path_as_fspath.filename();
+
+  Ogre::Entity *entity =
+      scene.createEntity(resource_relative_path_as_fspath.filename());
+  Ogre::SceneNode *node = scene.getRootSceneNode()->createChildSceneNode();
+  node->setPosition(position);
+  node->setScale(scale);
+  node->attachObject(entity);
+}
+
+void Scene::Load(OgreBites::ApplicationContext *appctx,
+                 const AssetLibrary &assetlib) {
   Root *root = appctx->getRoot();
   SceneManager *scn_manager = root->createSceneManager();
 
@@ -61,9 +207,9 @@ void Scene::Load(OgreBites::ApplicationContext *appctx) {
 
   light_node->setPosition(20, 80, 50);
 
+  // TODO: Specify the camera information in the scene config.
   Ogre::SceneNode *cam_node =
       scn_manager->getRootSceneNode()->createChildSceneNode();
-
   // camera
   {
     Ogre::Camera *cam = scn_manager->createCamera("myCam");
@@ -74,40 +220,32 @@ void Scene::Load(OgreBites::ApplicationContext *appctx) {
     appctx->getRenderWindow()->addViewport(cam);
   }
 
-  {
-    // TODO: download the ogre mesh for this to work.
-    Ogre::Entity *ogre_entity = scn_manager->createEntity("ogrehead.mesh");
-    Ogre::SceneNode *ogre_node =
-        scn_manager->getRootSceneNode()->createChildSceneNode();
-    ogre_node->attachObject(ogre_entity);
-    cam_node->setPosition(0, 47, 222);
+  std::cout << "Reading scene config from file: " << config_ << std::endl;
+  toml::table scene_tbl;
+  try {
+    scene_tbl = toml::parse_file(std::string(config_));
+  } catch (const toml::parse_error &err) {
+    std::cerr << "Error: Failed to parse scene toml: " << err << std::endl;
+    return;
   }
 
-  {
-    Ogre::Entity *ogre_entity2 = scn_manager->createEntity("ogrehead.mesh");
-    Ogre::SceneNode *ogre_node2 =
-        scn_manager->getRootSceneNode()->createChildSceneNode(
-            Ogre::Vector3(84, 48, 0));
-    ogre_node2->attachObject(ogre_entity2);
+  const toml::table *entities_table = scene_tbl["entities"].as<toml::table>();
+  if (!entities_table) {
+    std::cerr << "Could not find any entities in the config." << std::endl;
+    return;
   }
 
-  {
-    Ogre::Entity *ogre_entity3 = scn_manager->createEntity("ogrehead.mesh");
-    Ogre::SceneNode *ogre_node3 =
-        scn_manager->getRootSceneNode()->createChildSceneNode();
-    ogre_node3->setPosition(0, 104, 0);
-    ogre_node3->setScale(2, 1.2, 1);
-    ogre_node3->attachObject(ogre_entity3);
+  for (const auto &object : *entities_table) {
+    const toml::key &object_name = object.first;
+    std::cout << "Loading object: " << object_name << std::endl;
+    const toml::table *objinfo = object.second.as<toml::table>();
+    if (!objinfo) {
+      std::cerr << "Error: No object info found." << std::endl;
+      continue;
+    }
+    ParseEntityInfoFromTOML(*objinfo, *scn_manager, assetlib);
   }
-
-  {
-    Ogre::Entity *ogre_entity4 = scn_manager->createEntity("ogrehead.mesh");
-    Ogre::SceneNode *ogre_node4 =
-        scn_manager->getRootSceneNode()->createChildSceneNode();
-    ogre_node4->setPosition(-84, 48, 0);
-    ogre_node4->roll(Ogre::Degree(-90));
-    ogre_node4->attachObject(ogre_entity4);
-  }
+  std::cout << "Finished loading entities for scene." << std::endl;
 }
 
 enum ConfigStrictness { UNKNOWN = 0, REQUIRED, OPTIONAL };
@@ -143,7 +281,6 @@ class GameConfig {
 public:
   static std::optional<GameConfig>
   FromTOML(const std::filesystem::path &config_path) {
-
     GameConfig cfg;
 
     toml::table tbl;
@@ -181,9 +318,10 @@ private:
 
 class Game : public ApplicationContext {
 public:
-  Game(const GameConfig &cfg, std::filesystem::path project_path)
+  Game(const GameConfig &cfg, const AssetLibrary &assetlib,
+       std::filesystem::path project_path)
       : ApplicationContext(std::string(cfg.Name().data(), cfg.Name().size())),
-        project_path_(project_path), cfg_(cfg) {}
+        project_path_(project_path), cfg_(cfg), assetlib_(assetlib) {}
   virtual ~Game() = default;
 
   OGRE_OVERLOAD void createRoot();
@@ -197,6 +335,7 @@ private:
   std::filesystem::path project_path_;
   std::unordered_map<std::string, Scene> scenes_;
   const GameConfig &cfg_;
+  const AssetLibrary &assetlib_;
 };
 
 void Game::ParseScenes() {
@@ -239,7 +378,7 @@ void Game::LoadStartingScene() {
     std::cerr << "Error: starting scene does not exist: " << starting_scene;
     return;
   }
-  starting_scene_itr->second.Load(this);
+  starting_scene_itr->second.Load(this, assetlib_);
 }
 
 void Game::createRoot() {
@@ -273,6 +412,12 @@ void Game::setup() {
   mRoot->addFrameListener(this);
   // -- Block context: end
 
+  // Load Resources
+  Ogre::ResourceGroupManager &resg_manager =
+      Ogre::ResourceGroupManager::getSingleton();
+  // TODO: Remove commented out code.
+  resg_manager.addResourceLocation(assetlib_.GetAssetDirectory(), "FileSystem");
+
   ParseScenes();
   LoadStartingScene();
 }
@@ -293,8 +438,17 @@ void RunGameProject(const std::filesystem::path project_path) {
     return;
   }
 
+  const std::filesystem::path asset_library_path =
+      project_path / "assets" / "assets.toml";
+  std::optional<AssetLibrary> asset_lib =
+      AssetLibrary::FromTOML(asset_library_path);
+  if (!asset_lib.has_value()) {
+    std::cerr << "Error: Could not parse asset library config." << std::endl;
+    return;
+  }
+
   try {
-    auto game = Game(game_config.value(), project_path);
+    auto game = Game(game_config.value(), asset_lib.value(), project_path);
     game.initApp();
     game.getRoot()->startRendering();
     game.closeApp();
