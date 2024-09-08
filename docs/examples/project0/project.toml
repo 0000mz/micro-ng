@@ -1,0 +1,8 @@
+[game-info]
+title = "Example Game Title"
+start_scene = "main"
+
+[window]
+width = 720
+height = 480
+fullscreen = false
