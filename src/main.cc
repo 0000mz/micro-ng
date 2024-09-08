@@ -123,6 +123,11 @@ public:
             const AssetLibrary &assetlib);
 
 private:
+  void ParseCameraInfoFromTOML(std::string_view camera_name,
+                               const toml::table &camera_info,
+                               Ogre::SceneManager &scene,
+                               OgreBites::ApplicationContext &appctx);
+
   void ParseEntityInfoFromTOML(const toml::table &entity_info,
                                Ogre::SceneManager &scene,
                                const AssetLibrary &assetlib);
@@ -151,12 +156,33 @@ private:
     OUTVEC = Ogre::Vector3(parts[0], parts[1], parts[2]);                      \
   } while (false);
 
+void Scene::ParseCameraInfoFromTOML(std::string_view camera_name,
+                                    const toml::table &camera_info,
+                                    Ogre::SceneManager &scene,
+                                    OgreBites::ApplicationContext &appctx) {
+  Ogre::Vector3 position;
+  TOML_PARSE_VECTOR3(camera_info, "position", position, Ogre::Vector3(0, 0, 0));
+  std::optional<bool> auto_aspect_ratio =
+      camera_info["auto_aspect_ratio"].value<bool>();
+  std::optional<double> near_clip_distance =
+      camera_info["near_clip_distance"].value<double>();
+
+  Ogre::SceneNode *cam_node = scene.getRootSceneNode()->createChildSceneNode();
+  Ogre::Camera *cam =
+      scene.createCamera(std::string(camera_name.data(), camera_name.size()));
+  cam->setNearClipDistance(near_clip_distance.has_value() ? *near_clip_distance
+                                                          : 1);
+  cam->setAutoAspectRatio(auto_aspect_ratio.has_value() ? *auto_aspect_ratio
+                                                        : false);
+  cam_node->attachObject(cam);
+  cam_node->setPosition(position);
+  appctx.getRenderWindow()->addViewport(cam);
+}
+
 void Scene::ParseEntityInfoFromTOML(const toml::table &entity_info,
                                     Ogre::SceneManager &scene,
                                     const AssetLibrary &assetlib) {
-  std::cout << "Inside ParseEntityInfoFromTOML" << std::endl;
-  Ogre::Vector3 position(0, 0, 0);
-  Ogre::Vector3 scale(1, 1, 1);
+  Ogre::Vector3 position, scale;
 
   TOML_PARSE_VECTOR3(entity_info, "position", position, Ogre::Vector3(0, 0, 0));
   TOML_PARSE_VECTOR3(entity_info, "scale", scale, Ogre::Vector3(1, 1, 1));
@@ -207,19 +233,6 @@ void Scene::Load(OgreBites::ApplicationContext *appctx,
 
   light_node->setPosition(20, 80, 50);
 
-  // TODO: Specify the camera information in the scene config.
-  Ogre::SceneNode *cam_node =
-      scn_manager->getRootSceneNode()->createChildSceneNode();
-  // camera
-  {
-    Ogre::Camera *cam = scn_manager->createCamera("myCam");
-    cam->setNearClipDistance(5);
-    cam->setAutoAspectRatio(true);
-    cam_node->attachObject(cam);
-    cam_node->setPosition(0, 0, 140);
-    appctx->getRenderWindow()->addViewport(cam);
-  }
-
   std::cout << "Reading scene config from file: " << config_ << std::endl;
   toml::table scene_tbl;
   try {
@@ -229,15 +242,32 @@ void Scene::Load(OgreBites::ApplicationContext *appctx,
     return;
   }
 
+  const toml::table *cameras_table = scene_tbl["cameras"].as<toml::table>();
+  if (!cameras_table) {
+    std::cerr << "Could not find any cameras in the scene config." << std::endl;
+    return;
+  }
+  for (const auto &camera : *cameras_table) {
+    const toml::key &camera_name = camera.first;
+    std::cout << "Loading camera: " << camera_name << std::endl;
+    const toml::table *camerainfo = camera.second.as<toml::table>();
+    if (!camerainfo) {
+      std::cerr << "Error: No camera info found." << std::endl;
+      continue;
+    }
+    ParseCameraInfoFromTOML(camera_name, *camerainfo, *scn_manager, *appctx);
+  }
+
   const toml::table *entities_table = scene_tbl["entities"].as<toml::table>();
   if (!entities_table) {
-    std::cerr << "Could not find any entities in the config." << std::endl;
+    std::cerr << "Could not find any entities in the scene config."
+              << std::endl;
     return;
   }
 
   for (const auto &object : *entities_table) {
     const toml::key &object_name = object.first;
-    std::cout << "Loading object: " << object_name << std::endl;
+    std::cout << "Loading entity: " << object_name << std::endl;
     const toml::table *objinfo = object.second.as<toml::table>();
     if (!objinfo) {
       std::cerr << "Error: No object info found." << std::endl;
@@ -346,7 +376,6 @@ void Game::ParseScenes() {
   }
 
   for (const auto &entry : std::filesystem::directory_iterator(scenes_path)) {
-    // TODO: Parse the scene.
     const std::filesystem::path &path = entry.path();
     if (!std::filesystem::is_directory(path)) {
       continue;
@@ -415,7 +444,6 @@ void Game::setup() {
   // Load Resources
   Ogre::ResourceGroupManager &resg_manager =
       Ogre::ResourceGroupManager::getSingleton();
-  // TODO: Remove commented out code.
   resg_manager.addResourceLocation(assetlib_.GetAssetDirectory(), "FileSystem");
 
   ParseScenes();

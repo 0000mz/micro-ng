@@ -16,3 +16,7 @@ position = [-84, 48, 0]
 mesh = "ogrehead"
 # TODO: Add the roll: -90deg somewhere here...
 
+[cameras.my_cam]
+position = [0, 0, 140]
+auto_aspect_ratio = true
+near_clip_distance = 5
