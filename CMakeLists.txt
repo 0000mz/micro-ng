@@ -27,7 +27,19 @@ FetchContent_Declare(
   GIT_TAG               v2.4.2
   OVERRIDE_FIND_PACKAGE
 )
-FetchContent_MakeAvailable(ogre tomlplusplus CLI11)
+FetchContent_Declare(
+  spdlog
+  GIT_REPOSITORY        https://github.com/gabime/spdlog.git
+  GIT_TAG               v1.14.1
+  OVERRIDE_FIND_PACKAGE
+)
+FetchContent_Declare(
+  fmt
+  GIT_REPOSITORY        https://github.com/fmtlib/fmt.git
+  GIT_TAG               10.2.1
+  OVERRIDE_FIND_PACKAGE
+)
+FetchContent_MakeAvailable(ogre tomlplusplus CLI11 spdlog fmt)
 
 add_executable(game src/main.cc)
 target_link_libraries(game PRIVATE
@@ -36,4 +48,7 @@ target_link_libraries(game PRIVATE
   OgreRTShaderSystem
   RenderSystem_GL
   tomlplusplus::tomlplusplus
-  CLI11)
+  CLI11
+  spdlog::spdlog
+  fmt::fmt
+)
